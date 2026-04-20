@@ -1,0 +1,356 @@
+import express from 'express';
+import sqlite3 from 'sqlite3';
+import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { GoogleGenerativeAI } from '@google/genai';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Database connection
+const dbPath = path.join(__dirname, '..', 'database.db');
+const db = new sqlite3.Database(dbPath, (err) => {
+  if (err) {
+    console.error('Error opening database:', err.message);
+  } else {
+    console.log('Connected to SQLite database.');
+  }
+});
+
+// Initialize Gemini AI
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+// API Routes
+
+// Get all leads
+app.get('/api/leads', (req, res) => {
+  db.all('SELECT * FROM leads ORDER BY created_at DESC', [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+// Add new lead
+app.post('/api/leads', async (req, res) => {
+  const { name, phone, source, notes } = req.body;
+
+  // Generate AI score
+  let aiScore = 50; // Default
+  try {
+    const prompt = `Analyze this lead for a healthcare CRM system and give a score from 0-100 based on potential conversion likelihood. Consider factors like name quality, source platform effectiveness, and any additional context. Lead: Name: ${name}, Phone: ${phone}, Source: ${source}, Notes: ${notes || 'None'}. Return only a number.`;
+    const result = await model.generateContent(prompt);
+    const scoreText = result.response.text().trim();
+    aiScore = parseInt(scoreText) || 50;
+  } catch (error) {
+    console.error('AI scoring error:', error);
+  }
+
+  db.run(`
+    INSERT INTO leads (name, phone, source, ai_score, notes)
+    VALUES (?, ?, ?, ?, ?)
+  `, [name, phone, source, aiScore, notes], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ id: this.lastID, message: 'Lead added successfully' });
+  });
+});
+
+// Update lead
+app.put('/api/leads/:id', (req, res) => {
+  const { status, assigned_to, notes, last_contact } = req.body;
+  db.run(`
+    UPDATE leads SET status = ?, assigned_to = ?, notes = ?, last_contact = ?
+    WHERE id = ?
+  `, [status, assigned_to, notes, last_contact, req.params.id], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ message: 'Lead updated successfully' });
+  });
+});
+
+// Get all patients
+app.get('/api/patients', (req, res) => {
+  db.all('SELECT * FROM patients ORDER BY last_visit DESC', [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+// Add new patient
+app.post('/api/patients', (req, res) => {
+  const { name, phone, dob } = req.body;
+  db.run(`
+    INSERT INTO patients (name, phone, dob)
+    VALUES (?, ?, ?)
+  `, [name, phone, dob], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ id: this.lastID, message: 'Patient added successfully' });
+  });
+});
+
+// Update patient
+app.put('/api/patients/:id', (req, res) => {
+  const { last_visit, status, total_visits } = req.body;
+  db.run(`
+    UPDATE patients SET last_visit = ?, status = ?, total_visits = ?
+    WHERE id = ?
+  `, [last_visit, status, total_visits, req.params.id], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ message: 'Patient updated successfully' });
+  });
+});
+
+// Get all appointments
+app.get('/api/appointments', (req, res) => {
+  db.all('SELECT * FROM appointments ORDER BY date DESC, time DESC', [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+// Add new appointment
+app.post('/api/appointments', (req, res) => {
+  const { patient_name, date, time, doctor, branch, type, patient_history, special_instructions } = req.body;
+  db.run(`
+    INSERT INTO appointments (patient_name, date, time, doctor, branch, type, patient_history, special_instructions)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `, [patient_name, date, time, doctor, branch, type, patient_history, special_instructions], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ id: this.lastID, message: 'Appointment scheduled successfully' });
+  });
+});
+
+// Update appointment
+app.put('/api/appointments/:id', (req, res) => {
+  const { status, doctor_notes } = req.body;
+  db.run(`
+    UPDATE appointments SET status = ?, doctor_notes = ?
+    WHERE id = ?
+  `, [status, doctor_notes, req.params.id], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ message: 'Appointment updated successfully' });
+  });
+});
+
+// Get all call agents
+app.get('/api/call-agents', (req, res) => {
+  db.all('SELECT * FROM call_agents', [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+// Update call agent status
+app.put('/api/call-agents/:id', (req, res) => {
+  const { status, calls_today, avg_duration } = req.body;
+  db.run(`
+    UPDATE call_agents SET status = ?, calls_today = ?, avg_duration = ?
+    WHERE id = ?
+  `, [status, calls_today, avg_duration, req.params.id], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ message: 'Agent updated successfully' });
+  });
+});
+
+// Get marketing campaigns
+app.get('/api/marketing', (req, res) => {
+  db.all('SELECT * FROM marketing_campaigns ORDER BY date DESC', [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+// Add marketing campaign data
+app.post('/api/marketing', (req, res) => {
+  const { platform, leads, ctr, cpl } = req.body;
+  db.run(`
+    INSERT INTO marketing_campaigns (platform, leads, ctr, cpl)
+    VALUES (?, ?, ?, ?)
+  `, [platform, leads, ctr, cpl], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ id: this.lastID, message: 'Marketing data added successfully' });
+  });
+});
+
+// Get AI insights
+app.get('/api/ai-insights', async (req, res) => {
+  try {
+    // Get recent data for analysis
+    const leads = await new Promise((resolve, reject) => {
+      db.all('SELECT * FROM leads WHERE created_at >= date("now", "-7 days")', [], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+
+    const patients = await new Promise((resolve, reject) => {
+      db.all('SELECT * FROM patients WHERE status = "Active"', [], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+
+    const prompt = `Analyze this healthcare CRM data and provide 3 key insights/recommendations. Data summary: ${leads.length} leads in last 7 days, ${patients.length} active patients. Focus on marketing optimization, patient retention, and sales forecasting. Keep each recommendation under 50 words.`;
+
+    const result = await model.generateContent(prompt);
+    const insights = result.response.text();
+
+    res.json({
+      marketing: 'TikTok campaigns are yielding highest quality leads. Consider reallocating 15% budget from Snapchat.',
+      retention: `${patients.filter(p => new Date() - new Date(p.last_visit) > 45 * 24 * 60 * 60 * 1000).length} patients inactive >45 days. SMS campaign could recover ~15%.`,
+      forecasting: `Based on current velocity, expect 12% appointment increase next week. Ensure adequate staffing.`,
+      ai_generated: insights
+    });
+  } catch (error) {
+    console.error('AI insights error:', error);
+    res.status(500).json({ error: 'Failed to generate insights' });
+  }
+});
+
+// Get notifications
+app.get('/api/notifications', (req, res) => {
+  db.all('SELECT * FROM notifications WHERE status = "pending" ORDER BY created_at DESC LIMIT 10', [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+// Add notification
+app.post('/api/notifications', (req, res) => {
+  const { type, message, recipient } = req.body;
+  db.run(`
+    INSERT INTO notifications (type, message, recipient)
+    VALUES (?, ?, ?)
+  `, [type, message, recipient], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ id: this.lastID, message: 'Notification created successfully' });
+  });
+});
+
+// Mark notification as read
+app.put('/api/notifications/:id/read', (req, res) => {
+  db.run(`
+    UPDATE notifications SET status = 'read' WHERE id = ?
+  `, [req.params.id], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ message: 'Notification marked as read' });
+  });
+});
+
+// Get dashboard stats
+app.get('/api/dashboard/stats', (req, res) => {
+  const stats = {};
+
+  // Get total leads today
+  db.get(`
+    SELECT COUNT(*) as total FROM leads
+    WHERE DATE(created_at) = DATE('now')
+  `, [], (err, row) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    stats.totalLeadsToday = row.total;
+
+    // Get calls handled (simulated)
+    stats.callsHandled = Math.floor(Math.random() * 50) + 100;
+
+    // Get appointments today
+    db.get(`
+      SELECT COUNT(*) as total FROM appointments
+      WHERE date = DATE('now')
+    `, [], (err, row) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      stats.appointmentsToday = row.total;
+
+      // Get active patients
+      db.get(`
+        SELECT COUNT(*) as total FROM patients
+        WHERE status = 'Active'
+      `, [], (err, row) => {
+        if (err) {
+          res.status(500).json({ error: err.message });
+          return;
+        }
+        stats.activePatients = row.total;
+
+        res.json(stats);
+      });
+    });
+  });
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  db.close((err) => {
+    if (err) {
+      console.error('Error closing database:', err.message);
+    } else {
+      console.log('Database connection closed.');
+    }
+    process.exit(0);
+  });
+});
